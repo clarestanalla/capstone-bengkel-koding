@@ -1,234 +1,132 @@
 import streamlit as st
 import pandas as pd
-import joblib
-import matplotlib.pyplot as plt
 import numpy as np
+import joblib
 
-# =========================
-# CONFIG
-# =========================
+# Memuat model dan objek preprocessing data
+@st.cache_resource
+def load_resources():
+    model = joblib.load("best_model.pkl")
+    scaler = joblib.load("scaler.pkl")
+    columns_list = joblib.load("columns.pkl")
+    return model, scaler, columns_list
 
-st.set_page_config(
-    page_title="Customer Churn Prediction",
-    layout="wide"
-)
+try:
+    model, scaler, columns_list = load_resources()
+    resources_loaded = True
+except Exception as e:
+    st.error(f"Gagal memuat file model (best_model.pkl, scaler.pkl, atau columns.pkl). Pastikan file-file tersebut berada di repositori GitHub yang sama. Error: {e}")
+    resources_loaded = False
 
-# =========================
-# LOAD FILE
-# =========================
+st.title("Aplikasi Prediksi Customer Churn")
+st.write("Aplikasi ini digunakan untuk memprediksi apakah pelanggan akan mempertahankan layanan (Retention) atau meninggalkan layanan (Churn) berdasarkan data historis.")
 
-model = joblib.load("best_model.pkl")
-scaler = joblib.load("scaler.pkl")
-columns = joblib.load("columns.pkl")
-
-# =========================
-# SIDEBAR
-# =========================
-
-menu = st.sidebar.radio(
-    "Menu",
-    ["Home", "Prediction", "About"]
-)
-
-st.sidebar.title("Customer Churn Prediction")
-
-# =========================
-# HOME
-# =========================
-
-if menu == "Home":
-
-    st.title("Customer Churn Prediction System")
-
-    st.markdown("---")
-
-    col1, col2 = st.columns([2,1])
-
-    with col1:
-
-        st.subheader("Deskripsi")
-
-        st.write(
-            """
-            Aplikasi ini digunakan untuk memprediksi kemungkinan pelanggan
-            melakukan churn menggunakan model Machine Learning.
-            """
-        )
-
-        st.subheader("Model Terbaik")
-
-        st.write("""
-        - Model : Logistic Regression
-        - Preprocessing :
-            - Missing Value Handling
-            - One Hot Encoding
-            - StandardScaler
-        """)
-
-    with col2:
-
-        st.info(
-            """
-            Dataset :
-            Sales - Marketing Customer Dataset
-
-            Target :
-            Churn
-            """
-        )
-
-    st.markdown("---")
-
-    st.subheader("Performance Model")
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    col1.metric("Accuracy", "84%")
-    col2.metric("Precision", "50%")
-    col3.metric("Recall", "28%")
-    col4.metric("F1-Score", "32%")
-
-    st.markdown("---")
-
-    st.subheader("Interpretasi")
-
-    st.write("""
-    Model Logistic Regression dipilih sebagai model terbaik karena
-    menghasilkan F1-Score tertinggi dibandingkan model lain yang diuji.
-
-    Pada kasus churn prediction, Recall dan F1-Score menjadi metrik
-    penting karena perusahaan perlu mengidentifikasi pelanggan yang
-    berpotensi meninggalkan layanan.
-    """)
-
-# =========================
-# PREDICTION
-# =========================
-
-elif menu == "Prediction":
-
-    st.title("Prediction")
-
-    uploaded_file = st.file_uploader(
-        "Upload Dataset CSV",
-        type=["csv"]
-    )
+if resources_loaded:
+    st.header("Metode 1: Unggah File CSV Data Pelanggan")
+    uploaded_file = st.file_uploader("Pilih file CSV untuk prediksi massal", type=["csv"])
 
     if uploaded_file is not None:
-
-        df = pd.read_csv(uploaded_file)
-
-        st.subheader("Dataset Preview")
-        st.dataframe(df.head())
-
         try:
+            df_input = pd.read_csv(uploaded_file)
+            st.subheader("Sampel Data yang Diunggah")
+            st.dataframe(df_input.head())
 
-            if "churn" in df.columns:
-                df = df.drop("churn", axis=1)
+            # Proses pembersihan kolom yang tidak digunakan dalam pelatihan model
+            kolom_tidak_dipakai = ['churn', 'customer_id', 'signup_date', 'last_purchase_date', 'coupon_code']
+            df_clean = df_input.drop(columns=kolom_tidak_dipakai, errors='ignore')
 
-            original_df = df.copy()
+            # One-Hot Encoding untuk fitur kategorikal
+            df_encoded = pd.get_dummies(df_clean, drop_first=True)
 
-            # =========================================================
-            # SOLUSI AMAN: DISTRIBUSI PREDIKSI DINAMIS & REALISTIS
-            # =========================================================
-            # Membuat pola tebakan terstruktur berdasarkan jumlah baris data Anda
-            # Menghasilkan sebaran data tiruan yang realistis (~21% Churn, ~79% Not Churn)
-            num_rows = len(original_df)
-            pseudo_random = (np.arange(num_rows) * 7 + 13) % 100
-            prediction = np.where(pseudo_random < 21, 1, 0)
-            # =========================================================
+            # Sinkronisasi kolom agar sesuai dengan urutan saat training
+            df_encoded = df_encoded.reindex(columns=columns_list, fill_value=0)
 
-            original_df["Prediction"] = prediction
+            # Transformasi data dengan Scaler
+            df_scaled = scaler.transform(df_encoded)
 
-            original_df["Prediction"] = original_df[
-                "Prediction"
-            ].map({
-                0: "Not Churn",
-                1: "Churn"
-            })
+            # Prediksi menggunakan model hasil tuning
+            predictions = model.predict(df_scaled)
+            probabilities = model.predict_proba(df_scaled)[:, 1]
 
-            st.success("Prediction Success")
+            # Menggabungkan hasil prediksi ke dataframe asli
+            df_result = df_input.copy()
+            df_result['Prediksi Churn'] = predictions
+            df_result['Probabilitas Churn'] = probabilities
+            df_result['Status Pelanggan'] = df_result['Prediksi Churn'].map({1: 'Churn', 0: 'Retain'})
 
-            st.subheader("Prediction Result")
+            st.subheader("Hasil Analisis Prediksi")
+            
+            total_data = len(df_result)
+            churn_count = int(df_result['Prediksi Churn'].sum())
+            retain_count = total_data - churn_count
+            
+            st.write(f"Total baris data yang dianalisis: {total_data}")
+            st.write(f"Pelanggan diprediksi Tetap (Retain): {retain_count} ({retain_count/total_data*100:.2f}%)")
+            st.write(f"Pelanggan diprediksi Keluar (Churn): {churn_count} ({churn_count/total_data*100:.2f}%)")
 
-            st.dataframe(original_df)
+            st.subheader("Data Hasil Prediksi")
+            st.dataframe(df_result)
 
-            st.markdown("---")
-
-            st.subheader("Prediction Distribution")
-
-            churn_count = (
-                original_df["Prediction"]
-                .value_counts()
-            )
-
-            fig, ax = plt.subplots()
-
-            # Pewarnaan grafik: Hijau untuk aman, Merah untuk Churn
-            colors_map = {'Not Churn': '#2ecc71', 'Churn': '#e74c3c'}
-            current_colors = [colors_map[label] for label in churn_count.index]
-
-            ax.pie(
-                churn_count,
-                labels=churn_count.index,
-                autopct="%1.1f%%",
-                startangle=90,
-                colors=current_colors
-            )
-            ax.axis('equal') 
-
-            st.pyplot(fig)
-
-            csv = (
-                original_df
-                .to_csv(index=False)
-                .encode("utf-8")
-            )
-
+            # Fitur download hasil prediksi
+            csv_data = df_result.to_csv(index=False).encode('utf-8')
             st.download_button(
-                "Download Prediction Result",
-                csv,
-                "prediction_result.csv",
-                "text/csv"
+                label="Unduh Hasil Prediksi (CSV)",
+                data=csv_data,
+                file_name="hasil_prediksi_churn.csv",
+                mime="text/csv"
             )
 
         except Exception as e:
+            st.error(f"Terjadi kesalahan saat memproses file CSV: {e}")
 
-            st.error(f"Error : {e}")
+    st.header("Metode 2: Input Manual Data Pelanggan Tunggal")
+    st.write("Silakan masukkan nilai fitur di bawah ini untuk melihat hasil prediksi satu pelanggan khusus.")
 
-# =========================
-# ABOUT
-# =========================
+    col1, col2 = st.columns(2)
 
-else:
+    with col1:
+        age = st.number_input("Usia (Age)", min_value=1, max_value=120, value=30)
+        gender = st.selectbox("Jenis Kelamin (Gender)", ["Male", "Female"])
+        total_spent = st.number_input("Total Pengeluaran (Total Spent)", min_value=0.0, value=500.0)
+        avg_session_time = st.number_input("Rata-rata Waktu Sesi (Avg Session Time)", min_value=0.0, value=15.0)
+        pages_per_session = st.number_input("Halaman per Sesi (Pages per Session)", min_value=0.0, value=4.0)
 
-    st.title("About Project")
+    with col2:
+        satisfaction_score = st.slider("Skor Kepuasan (Satisfaction Score)", min_value=1.0, max_value=5.0, value=3.0, step=0.1)
+        support_tickets = st.number_input("Jumlah Tiket Dukungan (Support Tickets)", min_value=0, value=1)
+        marketing_spent_per_user = st.number_input("Biaya Pemasaran per Pengguna (Marketing Spent per User)", min_value=0.0, value=20.0)
+        lifetime_value = st.number_input("Nilai Seumur Hidup Pelanggan (Lifetime Value)", min_value=0.0, value=1200.0)
+        email_open_rate = st.slider("Rasio Membuka Email (Email Open Rate)", min_value=0.0, max_value=1.0, value=0.5, step=0.01)
 
-    st.write("""
-    ### Customer Churn Prediction
-
-    Project ini dibuat untuk memprediksi kemungkinan pelanggan
-    melakukan churn berdasarkan data perilaku pelanggan.
-
-    ### Tahapan
-
-    1. Data Understanding
-    2. Exploratory Data Analysis
-    3. Data Preprocessing
-    4. Feature Engineering
-    5. Model Training
-    6. Hyperparameter Tuning
-    7. Deployment menggunakan Streamlit Cloud
-
-    ### Model Final
-
-    Logistic Regression
-
-    ### Tools
-
-    - Python
-    - Pandas
-    - Scikit-Learn
-    - Joblib
-    - Streamlit
-    """)
+    if st.button("Prediksi Data Manual"):
+        try:
+            input_dict = {
+                'age': [age],
+                'gender': [gender],
+                'total_spent': [total_spent],
+                'avg_session_time': [avg_session_time],
+                'pages_per_session': [pages_per_session],
+                'satisfaction_score': [satisfaction_score],
+                'support_tickets': [support_tickets],
+                'marketing_spent_per_user': [marketing_spent_per_user],
+                'lifetime_value': [lifetime_value],
+                'email_open_rate': [email_open_rate]
+            }
+            
+            df_manual = pd.DataFrame(input_dict)
+            
+            df_manual_encoded = pd.get_dummies(df_manual, drop_first=True)
+            df_manual_encoded = df_manual_encoded.reindex(columns=columns_list, fill_value=0)
+            
+            df_manual_scaled = scaler.transform(df_manual_encoded)
+            pred_manual = model.predict(df_manual_scaled)[0]
+            prob_manual = model.predict_proba(df_manual_scaled)[0][1]
+            
+            st.subheader("Hasil Prediksi Manual")
+            if pred_manual == 1:
+                st.error(f"Hasil Prediksi: CHURN (Pelanggan kemungkinan besar akan keluar) dengan probabilitas {prob_manual*100:.2f}%")
+            else:
+                st.success(f"Hasil Prediksi: RETAIN (Pelanggan kemungkinan besar akan bertahan) dengan probabilitas {(1-prob_manual)*100:.2f}%")
+                
+        except Exception as e:
+            st.error(f"Terjadi kesalahan pada prediksi manual: {e}")
